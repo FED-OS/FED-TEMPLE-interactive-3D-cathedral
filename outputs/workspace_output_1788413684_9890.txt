@@ -1,0 +1,52 @@
+  function step() {
+    const target = Math.min(cursor + perFrame, positions.length);
+    for (; cursor < target; cursor++) {
+      risen[cursor] = true;
+    }
+    // animate risen ones toward targetY
+    let allDone = true;
+    for (let i = 0; i < positions.length; i++) {
+      const p = positions[i];
+      if (!risen[i]) { allDone = false; continue; }
+      p.y += (p.targetY - p.y) * 0.18;
+      if (Math.abs(p.y - p.targetY) > 0.01) allDone = false;
+      dummy.position.set(p.x, p.y, p.rotY === undefined ? 0 : 0); // z handled below
+      // need z; recompute from stored
+      dummy.position.set(p.x, p.y, p.z != null ? p.z : 0);
+      dummy.rotation.set(0, p.rotY || 0, 0);
+      dummy.updateMatrix();
+      inst.setMatrixAt(i, dummy.matrix);
+    }
+    inst.instanceMatrix.needsUpdate = true;
+    if (!allDone || cursor < positions.length) {
+      requestAnimationFrame(step);
+    }
+  }
+  step();
+}
+
+// We need z stored on positions — patch buildBricks to record z:
+// (Handled inline above; positions already carry x, targetY, rotY.
+//  z is set in the branch logic. Let's store it.)
+// ---- Actually we set x,z in branches; store z on the object: ----
+// (Rewrite helper to also push z — done via closure var z in each branch.
+//  The positions.push already includes z implicitly? No — we pushed {x,y,targetY,rotY,commit,index}.
+//  Add z by editing the push. Quick fix below via a post-process.)
+
+// Post-process: re-derive z for each position so animateBrickRise has it.
+function fixBrickZ(positions, cols, rows, bw, bd, gap, wallX) {
+  const frontCount = cols, backCount = cols, sideRows = rows - 2;
+  positions.forEach((p, idx) => {
+    if (idx < frontCount) p.z = wallX / 2;
+    else if (idx < frontCount + backCount) p.z = -wallX / 2;
+    else {
+      const s = idx - frontCount - backCount;
+      if (s < sideRows) p.z = ((s % sideRows) - sideRows / 2) * (bd + gap) + (bd + gap) / 2;
+      else p.z = (((s - sideRows) % sideRows) - sideRows / 2) * (bd + gap) + (bd + gap) / 2;
+    }
+    p.bw = bw; p.bd = bd;
+  });
+}
+
+// ---- GOLDEN TILES (stars) ----
+function buildGoldenTiles(stars) {

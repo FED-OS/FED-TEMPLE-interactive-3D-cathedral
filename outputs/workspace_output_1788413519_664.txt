@@ -1,0 +1,9 @@
+dirs created
+total 28
+drwxr-xr-x 6 root root 4096 Sep  3 05:31 .
+drwxr-xr-x 7 user user 4096 Sep  3 05:31 ..
+drwxr-xr-x 4 root root 4096 Sep  3 05:31 .github
+drwxr-xr-x 2 root root 4096 Sep  3 05:31 discussion
+drwxr-xr-x 2 root root 4096 Sep  3 05:31 prompts
+-rw-r--r-- 1 root root 1834 Sep  3 05:31 todo.md
+drwxr-xr-x 2 root root 4096 Sep  3 05:31 wiki

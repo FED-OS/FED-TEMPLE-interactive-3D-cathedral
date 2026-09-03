@@ -1,0 +1,6 @@
+510:    // animate risen ones toward targetY
+517:      dummy.position.set(p.x, p.y, p.rotY === undefined ? 0 : 0); // z handled below
+518:      // need z; recompute from stored
+540:// Post-process: re-derive z for each position so animateBrickRise has it.
+541:function fixBrickZ(positions, cols, rows, bw, bd, gap, wallX) {
+555:// ---- GOLDEN TILES (stars) ----
