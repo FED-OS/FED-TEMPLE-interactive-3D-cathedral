@@ -1,0 +1,38 @@
+name: Greetings
+
+on:
+  issues:
+    types: [opened]
+  pull_request:
+    types: [opened]
+
+permissions:
+  issues: write
+  pull-requests: write
+
+jobs:
+  greet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/first-interaction@v1
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          issue-message: |
+            🛕 Thanks for opening an issue in FED-TEMPLE!
+
+            A maintainer will triage this soon. While you wait:
+            - Check the [FAQ](https://github.com/FED-OS/FED-TEMPLE/blob/main/FAQ.md) and [SUPPORT.md](https://github.com/FED-OS/FED-TEMPLE/blob/main/SUPPORT.md).
+            - If this is a bug, paste the exact error message from the toast and the dev console.
+            - If you're rate-limited, the "API: N calls left" chip in the top-right tells you when it resets.
+
+            Welcome to the forge.
+          pr-message: |
+            🛕 Thanks for your first PR to FED-TEMPLE!
+
+            A few things to help it merge smoothly:
+            - Confirm it follows the ethos: browser-native, no bullshit, brutalist clarity ([ADR-0001](https://github.com/FED-OS/FED-TEMPLE/blob/main/ADR.md)).
+            - The PR title is Conventional Commits (e.g., `feat: ...`, `fix: ...`).
+            - One concern per PR — if this touches multiple areas, consider splitting.
+            - Update README / CHANGELOG / ADR if behavior changed.
+
+            We appreciate you building with us.

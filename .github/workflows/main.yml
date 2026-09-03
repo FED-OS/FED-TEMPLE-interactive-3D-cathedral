@@ -1,0 +1,65 @@
+name: Main
+
+# Umbrella workflow that runs the core quality gates on every push to main.
+# Aggregates the most important checks so the badge on the README reflects
+# the true health of the project.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate-runtime:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Runtime files present
+        run: |
+          for f in index.html styles.css scripts/temple.js social-image.png; do
+            [ -f "$f" ] || { echo "missing $f"; exit 1; }
+          done
+      - name: Syntax check
+        run: node --check scripts/temple.js
+      - name: Ethos guard
+        run: |
+          ! grep -n "eval(" scripts/temple.js || { echo "eval() rejected"; exit 1; }
+          ! grep -n "innerHTML" scripts/temple.js || { echo "innerHTML rejected (ADR-0003)"; exit 1; }
+      - name: Docs sanity
+        run: |
+          for f in README.md CONTRIBUTING.md LICENSE CHANGELOG.md SECURITY.md CODE_OF_CONDUCT.md; do
+            [ -f "$f" ] || { echo "missing $f"; exit 1; }
+          done
+
+  http-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Serve
+        run: |
+          python3 -m http.server 8000 &
+          sleep 2
+      - name: Routes return 200
+        run: |
+          for path in / /styles.css /scripts/temple.js /social-image.png; do
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000$path")
+            echo "$path -> $code"
+            [ "$code" = "200" ] || exit 1
+          done
+
+  workflow-count:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Confirm all declared workflows exist
+        run: |
+          for w in build test ci cd deploy release publish pr stale labeler greetings codeql main pages dependency-review scorecards; do
+            [ -f ".github/workflows/$w.yml" ] || { echo "missing $w.yml"; exit 1; }
+          done
+          echo "All workflows present."

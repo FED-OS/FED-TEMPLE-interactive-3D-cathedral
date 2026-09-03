@@ -1,0 +1,34 @@
+name: Publish
+
+# FED-TEMPLE is a static site with no npm package to publish.
+# This workflow exists for completeness and future extensibility
+# (e.g., publishing a companion npm CLI if one is ever added — gated
+# behind an ADR, since the ethos is build-free).
+#
+# Currently it only validates the repo and is a no-op publish.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+      - name: Syntax check
+        run: node --check scripts/temple.js
+      - name: Confirm static-only (no publish target)
+        run: |
+          echo "No publish target — FED-TEMPLE is a static site."
+          echo "Deployment is handled by deploy.yml / cd.yml / pages.yml."
+          if [ -f package.json ]; then
+            echo "⚠️ package.json present — if a publish step is intended, update this workflow per an ADR."
+          fi

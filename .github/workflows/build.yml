@@ -1,0 +1,72 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Verify runtime files exist
+        run: |
+          set -e
+          for f in index.html styles.css scripts/temple.js social-image.png; do
+            if [ ! -f "$f" ]; then
+              echo "❌ Missing required runtime file: $f"
+              exit 1
+            fi
+            echo "✅ Found $f"
+          done
+
+      - name: Syntax-check the engine
+        run: node --check scripts/temple.js
+
+      - name: Start static server
+        run: |
+          python3 -m http.server 8000 &
+          echo $! > server.pid
+          sleep 2
+
+      - name: Smoke-test HTTP responses
+        run: |
+          set -e
+          check() {
+            code=$(curl -s -o /dev/null -w "%{http_code}" "http://localhost:8000$1")
+            echo "$1 -> $code"
+            [ "$code" = "200" ] || exit 1
+          }
+          check /
+          check /styles.css
+          check /scripts/temple.js
+          check /social-image.png
+
+      - name: Stop server
+        if: always()
+        run: |
+          if [ -f server.pid ]; then kill "$(cat server.pid)" || true; fi
+
+      - name: Upload static artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: fed-temple-static
+          path: |
+            index.html
+            styles.css
+            scripts/
+            social-image.png
+          retention-days: 14

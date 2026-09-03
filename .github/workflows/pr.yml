@@ -1,0 +1,47 @@
+name: PR
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+
+permissions:
+  contents: read
+  pull-requests: write
+
+jobs:
+  pr-checks:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Verify runtime files
+        run: |
+          for f in index.html styles.css scripts/temple.js social-image.png; do
+            [ -f "$f" ] || { echo "missing $f"; exit 1; }
+          done
+
+      - name: Syntax check
+        run: node --check scripts/temple.js
+
+      - name: Ethos guard — no eval / innerHTML in engine
+        run: |
+          ! grep -n "eval(" scripts/temple.js || { echo "eval() rejected"; exit 1; }
+          ! grep -n "innerHTML" scripts/temple.js || { echo "innerHTML rejected (ADR-0003)"; exit 1; }
+
+      - name: Conventional Commit title check
+        run: |
+          title="${{ github.event.pull_request.title }}"
+          echo "PR title: $title"
+          if echo "$title" | grep -qE '^(feat|fix|docs|style|refactor|perf|test|chore|build|ci|revert)(\(.+\))?: .+'; then
+            echo "✅ Conventional Commits title OK"
+          else
+            echo "❌ PR title should follow Conventional Commits, e.g. 'feat: add time-lapse slider'"
+            exit 1
+          fi
+
+      - name: Remind about docs
+        if: always()
+        run: |
+          echo "::notice::If behavior changed, update README.md, CHANGELOG.md, and add an ADR entry if architectural."
