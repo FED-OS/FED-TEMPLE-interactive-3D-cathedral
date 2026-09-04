@@ -1,77 +1,23 @@
-# FED-TEMPLE — Build Tracker
+# Phase 11: Show Individual Repo Projects in the Temple
 
-## Phase 1: Core App
-- [x] Create repo structure
-- [x] index.html (Three.js temple + GitHub fetch + UI + Ko-fi + OG tags)
-- [x] styles.css (brutalist dark theme, responsive, modal/toast/loader)
-- [x] scripts/temple.js (full engine: 9 MVP features + 7 hidden gems)
-- [x] social-image.png (OG preview, generated)
+## Goal
+Instead of blending all repos' commits into one interleaved mass, build a
+SEPARATE mini-pyramid/tower per repo. Each project = its own visible structure.
+User can see at a glance: how many projects, which are big, which are small,
+what languages each uses.
 
-## Phase 2: Governance & Community
-- [x] LICENSE (MIT)
-- [x] README.md (with Ko-fi button + OG + full feature table)
-- [x] CONTRIBUTING.md
-- [x] CODE_OF_CONDUCT.md
-- [x] SECURITY.md
-- [x] SUPPORT.md
-- [x] CHANGELOG.md
-- [x] FAQ.md
-- [x] NOTICE.md
-- [x] CITATIONS.md
-- [x] COPYING.md
-- [x] GOVERNANCE.md
-- [x] PRICING.md
-- [x] usage.md
-- [x] SUMMARY.md
-
-## Phase 3: Agent / Dev Docs
-- [x] CLAUDE.md
-- [x] AGENTS.md
-- [x] AUTHORS.md
-- [x] MAINTAINERS.md
-- [x] ROADMAP.md
-- [x] DEPLOYMENT.md
-- [x] BUILD.md
-- [x] INSTALL.md
-- [x] ADR.md (7 decisions)
-
-## Phase 4: .github
-- [x] .github/DISCUSSION_WELCOME_README.md
-- [x] .github/PULL_REQUEST_TEMPLATE.md
-- [x] .github/ISSUE_TEMPLATE/bug_report.md
-- [x] .github/ISSUE_TEMPLATE/feature_request.md
-- [x] .github/ISSUE_TEMPLATE/custom.md
-- [x] .github/labeler.yml
-- [x] bug_report.md (root duplicate)
-- [x] feature_request.md (root duplicate)
-
-## Phase 5: Workflows (16)
-- [x] .github/workflows/build.yml
-- [x] .github/workflows/test.yml
-- [x] .github/workflows/ci.yml
-- [x] .github/workflows/cd.yml
-- [x] .github/workflows/deploy.yml
-- [x] .github/workflows/release.yml
-- [x] .github/workflows/publish.yml
-- [x] .github/workflows/pr.yml
-- [x] .github/workflows/stale.yml
-- [x] .github/workflows/labeler.yml
-- [x] .github/workflows/greetings.yml
-- [x] .github/workflows/codeql.yml
-- [x] .github/workflows/main.yml
-- [x] .github/workflows/pages.yml
-- [x] .github/workflows/dependency-review.yml
-- [x] .github/workflows/scorecards.yml
-
-## Phase 6: Misc
-- [x] prompts/README.md (starter prompts for AI-assisted dev)
-- [x] wiki/Home.md (knowledge base stub)
-- [x] discussion/README.md (archived discussions stub)
-- [x] .gitignore
-- [x] Ko-fi integration in README + index.html
-
-## Verification
-- [x] node --check scripts/temple.js → OK
-- [x] All 57 files present
-- [x] Local server returns 200 on /, styles.css, scripts/temple.js, social-image.png
-- [x] Port exposed for live preview
+## Tasks
+- [x] Design multi-pyramid layout: arrange N repo pyramids in a ring around center
+- [x] Refactor buildBricks to build one small pyramid per repo (not one big temple)
+- [x] Each repo pyramid sized by its commit count, colored by that repo's languages
+- [x] Keep InstancedMesh approach (one big instanced mesh, positions span all pyramids)
+- [x] Keep raycasting/drag/tree-panel working (positions array still carries commit data)
+- [x] Keep golden tiles + pillars + stained glass (they use blueprint-level stats, not commits)
+- [x] Scale dais/ground to fit the multi-pyramid spread (camera pulled back, orbit radius 38)
+- [x] Update demo data to have distinct repos with different sizes
+- [x] Test on FED-OS real data — 12 pyramids, one per repo
+- [x] Screenshot to confirm visual — multiple distinct pyramids visible
+- [x] Verify double-click repo tree still works with multi-pyramid layout
+- [x] Update SNAPTIME_INLINE snapshot code to use multi-pyramid layout too
+- [x] Remove debug exports
+- [x] Deploy
