@@ -16,7 +16,12 @@
 
   <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%F0%9F%9B%95%3C/text%3E%3C/svg%3E" />
   <link rel="stylesheet" href="styles.css" />
-<script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+  <script src="https://sites.super.myninja.ai/_assets/ninja-daytona-script.js"></script>
+  <!-- lz-string: load as a classic script so it exposes a global `LZString`.
+       Importing the CDN build as an ES module throws ("no default export"),
+       which kills the whole app before it boots. Classic global is the
+       browser-native, zero-dependency fix. -->
+  <script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
 </head>
 <body>
 
@@ -26,21 +31,19 @@
 <div style="margin-top:20px;color:var(--text-dim)" id="ascii-status">Initializing WebGL forge...</div>
   </div>
 
-  <!-- Main UI -->
+  <!-- Main UI (slimmed further — Phase 9) -->
   <div id="ui">
-    <h1><span class="logo">🛕</span> FED-TEMPLE <span class="blink"></span></h1>
+    <h1><span class="logo">🛕</span> FED-TEMPLE</h1>
 
     <div class="input-row">
       <input id="username" value="FED-OS" placeholder="GitHub username" autocomplete="off" spellcheck="false" />
+      <button id="buildBtn">⛏</button>
     </div>
 
-    <div class="btn-grid">
-      <button id="buildBtn">⛏ Build Temple</button>
-      <button id="demoBtn" class="secondary">✨ Demo</button>
-    </div>
-    <div class="btn-grid">
-      <button id="cancelBtn" class="danger" disabled>✖ Cancel</button>
-      <button id="toggleUi" class="secondary">👁 Hide UI</button>
+    <div class="btn-row">
+      <button id="demoBtn" class="secondary">demo</button>
+      <button id="cancelBtn" class="danger" disabled>cancel</button>
+      <button id="toggleUi" class="secondary">hide</button>
     </div>
 
     <div id="progress-wrap">
@@ -49,15 +52,18 @@
     </div>
 
     <div id="stats">
-      <h2>// Blueprint</h2>
-      <div class="stat-row"><span>commits → bricks</span><span class="v" id="s-commits">0</span></div>
-      <div class="stat-row"><span>stars → gold</span><span class="v" id="s-stars">0</span></div>
-      <div class="stat-row"><span>forks → pillars</span><span class="v" id="s-forks">0</span></div>
+      <h2 id="statsToggle">// Blueprint ▾</h2>
+      <div class="stat-row"><span>commits</span><span class="v" id="s-commits">0</span></div>
+      <div class="stat-row"><span>stars</span><span class="v" id="s-stars">0</span></div>
+      <div class="stat-row"><span>forks</span><span class="v" id="s-forks">0</span></div>
       <div class="stat-row"><span>repos</span><span class="v" id="s-repos">0</span></div>
       <div class="stat-row"><span>languages</span><span class="v" id="s-langs">0</span></div>
       <div id="lang-pills"></div>
     </div>
   </div>
+
+  <!-- Hint badge: tells the user about drag + dblclick -->
+  <div id="hint">hold a brick to move · double-click for repo tree</div>
 
   <!-- Commit modal -->
   <div id="modal">
@@ -73,30 +79,33 @@
     </div>
   </div>
 
-  <!-- Bottom toolbar -->
+  <!-- Repo-tree panel (Phase 8: double-click a brick) -->
+  <div id="tree-panel">
+    <div class="t-head">
+      <div>
+        <div class="t-title"><span class="repo-icon">📁</span><span id="treeRepoName">—</span></div>
+        <div class="t-sub" id="treeSub">—</div>
+      </div>
+      <button class="t-close" id="treeClose">✕</button>
+    </div>
+    <div class="t-body" id="treeBody">—</div>
+    <div class="t-footer">
+      <a id="treeLink" class="t-link" href="#" target="_blank" rel="noopener">view repo on GitHub →</a>
+    </div>
+  </div>
+
+  <!-- Bottom toolbar (trimmed to 4 essentials — Phase 9) -->
   <div id="toolbar">
-    <button id="resetCam" title="Reset camera (R)">🏠 Home</button>
-    <button id="autoRotate" title="Auto-orbit">🔄 Auto-Orbit</button>
-    <button id="snapshot" title="Download PNG">📸 Snapshot</button>
-    <button id="shareLink" title="Copy shareable link">🔗 Share</button>
-    <button id="downloadHtml" title="Download standalone HTML">💾 Save HTML</button>
+    <button id="resetCam" title="Reset camera (R)">🏠</button>
+    <button id="autoRotate" title="Auto-orbit">🔄</button>
+    <button id="snapshot" title="Download PNG (S)">📸</button>
+    <button id="shareLink" title="Copy shareable link">🔗</button>
+    <button id="downloadHtml" title="Download standalone HTML">💾</button>
+    <button id="toggleTree" class="secondary" title="Show repo tree of last brick">🌳</button>
   </div>
 
   <!-- Toast -->
   <div id="toast"></div>
-
-  <!-- Ko-fi -->
-  <div id="kofi">
-    <a href="https://ko-fi.com/YOUR_USERNAME" target="_blank" rel="noopener">
-      <img height="36" style="border:0px;height:36px;" src="https://ko-fi.com/img/githubbutton_sm.svg" alt="Buy Me a Coffee at ko-fi.com" />
-    </a>
-  </div>
-
-  <!-- Credit -->
-  <div id="credit">
-    FED-TEMPLE · part of <a href="https://github.com/FED-OS" target="_blank" rel="noopener">FED-OS</a><br/>
-    <span id="rate-info"></span>
-  </div>
 
   <!-- 3D canvas mounts here -->
   <div id="canvas-container"></div>
@@ -106,8 +115,7 @@
   {
     "imports": {
       "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
-      "lz-string": "https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"
+      "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
     }
   }
   </script>
