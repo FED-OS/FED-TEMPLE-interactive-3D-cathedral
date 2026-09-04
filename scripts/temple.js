@@ -2,45 +2,45 @@
    FED-TEMPLE — temple.js
    The Digital Monument — core engine
    -------------------------------------------------------------------
-   Features baked in:
-     [MVP 1] Rich loading feedback (progress bar + messages)
-     [MVP 2] Graceful error handling (toast)
-     [MVP 3] Cancel button (AbortController)
-     [MVP 4] Brick-by-brick building animation (queue)
-     [MVP 5] Stats panel + interactive language pills
-     [MVP 6] Click brick → commit modal with GitHub link
-     [MVP 7] Shareable hash link (lz-string, no server)
-     [MVP 8] Download standalone HTML (Blob)
-     [MVP 9] Responsive + demo mode
-     [GEM]   Auto-orbit on idle, ghosts of contributors,
-             fallen-ruins empty state, aura ring, hidden relic,
-             ASCII loader, localStorage cache, snapshot PNG,
-             rate-limit display
+   Phase 9: Performance, color diversity, declutter, UI reduction.
+     • Shadows OFF, pixel ratio capped at 1, antialias OFF
+     • Single sun light + ambient (no dynamic PointLights)
+     • Golden tiles + pillars INSTANCED (one draw call each)
+     • Ghosts, lanterns, aura, grid, staircase REMOVED (pointless clutter)
+     • Commits INTERLEAVED by repo round-robin so colors spread throughout
+       the temple instead of forming solid color bands ("poorly colored pyramid")
+     • animate() loop stripped to camera + controls + render only
    =================================================================== */
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import LZString from 'lz-string';
+
+// lz-string is loaded as a classic <script> in index.html and exposes the
+// global `LZString`. (The CDN build has no ESM default export, so importing it
+// as a module throws and kills the app before boot.) Keep using the global.
+const LZString = window.LZString;
 
 // ------------------------------------------------------------------
 // CONFIG
 // ------------------------------------------------------------------
 const MAX_BRICKS = 5000;       // hard cap so the browser doesn't die
-const MAX_REPOS_FOR_COMMITS = 5; // top-N repos we paginate commits for
+const MAX_REPOS_FOR_COMMITS = 12; // mine more repos for richer color diversity
 const CACHE_TTL_MS = 1000 * 60 * 60 * 24; // 24h localStorage cache
 const IDLE_ORBIT_MS = 30000;   // resume auto-orbit after this idle
 const INITIAL_ORBIT_MS = 10000; // auto-orbit on first build
-const RELIC_THRESHOLD = 5000;  // bricks needed to maybe spawn the relic
 
-// GitHub language → hex color (subset; unknown → slate)
+// GitHub language → hex color. Several official linguist colors are too dark
+// to read against our #0d1117 background with flat lighting (Python #3572A5,
+// C #555555, CSS #563d7c, PHP #4F5D95 all look near-black). We brighten those
+// to a lighter shade of the same hue so every language is clearly visible.
 const LANG_COLORS = {
-  JavaScript:'#f1e05a', TypeScript:'#3178c6', Python:'#3572A5',
-  HTML:'#e34c26', CSS:'#563d7c', Shell:'#89e051', Rust:'#dea584',
-  Go:'#00ADD8', Java:'#b07219', C:'#555555', 'C++':'#f34b7d',
-  'C#':'#178600', Ruby:'#701516', PHP:'#4F5D95', Vue:'#41b883',
+  JavaScript:'#f1e05a', TypeScript:'#3178c6', Python:'#4B8BBE',
+  HTML:'#e34c26', CSS:'#8B5CF6', Shell:'#89e051', Rust:'#dea584',
+  Go:'#00ADD8', Java:'#b07219', C:'#8B8B8B', 'C++':'#f34b7d',
+  'C#':'#178600', Ruby:'#701516', PHP:'#7B8AB8', Vue:'#41b883',
   Svelte:'#ff3e00', Dockerfile:'#384d54', Makefile:'#427819',
-  Vue:'#41b883', Kotlin:'#A97BFF', Swift:'#F05138', Dart:'#00B4AB',
-  Lua:'#000080', Rascal:'#ff7036', Unknown:'#888888'
+  Kotlin:'#A97BFF', Swift:'#F05138', Dart:'#00B4AB',
+  Lua:'#5C5CE0', Rascal:'#ff7036', Unknown:'#888888'
 };
 const langColor = (l) => LANG_COLORS[l] || '#888888';
 
@@ -55,19 +55,33 @@ const ui = $('ui'), usernameInput = $('username'), buildBtn = $('buildBtn'),
       toastEl = $('toast'), modalEl = $('modal'), modalMsg = $('modalMsg'),
       modalRepo = $('modalRepo'), modalDate = $('modalDate'),
       modalLink = $('modalLink'), modalClose = $('modalClose'),
-      langPills = $('lang-pills'), rateInfo = $('rate-info'),
+      langPills = $('lang-pills'),
       asciiLoader = $('ascii-loader'), asciiArt = $('ascii-art'),
-      asciiStatus = $('ascii-status');
+      asciiStatus = $('ascii-status'),
+      treePanel = $('tree-panel'), treeBody = $('treeBody'),
+      treeRepoName = $('treeRepoName'), treeSub = $('treeSub'),
+      treeLink = $('treeLink'), treeClose = $('treeClose'),
+      toggleTreeBtn = $('toggleTree'), hintEl = $('hint');
+
+// rate-info was removed in the Phase 8 UI slim; keep a nullable ref so
+// updateRateLimit() can no-op gracefully without a ReferenceError.
+const rateInfo = $('rate-info');   // null in current UI
 
 // ------------------------------------------------------------------
 // State
 // ------------------------------------------------------------------
 let abortCtrl = null;
 let scene, camera, renderer, controls, raycaster, pointer, clock;
-let brickGroup, tileGroup, pillarGroup, glassGroup, ghostGroup, auraMesh, relicMesh;
+let brickGroup, tileGroup, pillarGroup, glassGroup, ghostGroup;
 let templeState = null;        // { blueprint, dimmedLangs:Set }
 let lastInteraction = Date.now();
 let autoOrbitOn = false;
+
+// ---- brick drag state (Phase 8) ----
+let drag = null;               // active drag session or null
+// drag = { id, startX, startY, moved, plane, hitPoint, brickY }
+const DRAG_THRESHOLD = 6;      // px before we consider it a drag, not a click
+let lastBrickRepo = null;      // repo name of the most-recently-touched brick (Tree button)
 
 // ==================================================================
 // UTILITIES
@@ -89,6 +103,13 @@ function setButtons(building) {
   buildBtn.disabled = building;
   demoBtn.disabled = building;
   cancelBtn.disabled = !building;
+}
+
+// Hint badge: show the drag/dblclick tip briefly after each build.
+function showHint() {
+  hintEl.classList.add('show');
+  clearTimeout(showHint._t);
+  showHint._t = setTimeout(() => hintEl.classList.remove('show'), 7000);
 }
 
 // ==================================================================
@@ -190,19 +211,42 @@ async function fetchAllData(username, onProgress, signal) {
     }
   });
 
-  // ---- commits (top N repos by stars) ----
-  const topRepos = [...repos]
-    .sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0))
-    .slice(0, MAX_REPOS_FOR_COMMITS);
+  // ---- commits (repos chosen for LANGUAGE DIVERSITY, not just stars) ----
+  // The user's #1 complaint was the "poorly colored pyramid" — mining only
+  // the top-5 star repos meant one dominant language flooded the temple.
+  // Now we pick repos to maximize language coverage: for each distinct
+  // language we take the highest-star repo of that language first, then fill
+  // remaining slots with more repos (star-sorted). This guarantees every
+  // language the user writes gets represented in the brick colors.
+  const reposByLang = {};        // lang → best repo (most stars)
+  repos.forEach(repo => {
+    const lang = repo.language || 'Unknown';
+    const prev = reposByLang[lang];
+    if (!prev || (repo.stargazers_count || 0) > (prev.stargazers_count || 0)) {
+      reposByLang[lang] = repo;
+    }
+  });
+  // one best repo per language, star-sorted
+  const diversityRepos = Object.values(reposByLang)
+    .sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0));
+  // remaining repos (star-sorted) to fill out to MAX_REPOS_FOR_COMMITS
+  const diversityNames = new Set(diversityRepos.map(r => r.name));
+  const fillRepos = repos
+    .filter(r => !diversityNames.has(r.name))
+    .sort((a, b) => (b.stargazers_count || 0) - (a.stargazers_count || 0));
+  const topRepos = [...diversityRepos, ...fillRepos].slice(0, MAX_REPOS_FOR_COMMITS);
 
-  const allCommits = [];
+  // Collect commits grouped per-repo so we can INTERLEAVE them later.
+  // Round-robin interleaving spreads each repo's language color across the
+  // whole temple instead of clustering one repo's bricks into a single band.
+  const perRepo = [];   // array of arrays: perRepo[i] = commits of repo i
   for (let i = 0; i < topRepos.length; i++) {
-    if (allCommits.length >= MAX_BRICKS) break;
     const repo = topRepos[i];
     onProgress(`Mining commits: ${repo.name} (${i + 1}/${topRepos.length})`,
                10 + (i / topRepos.length) * 80);
+    const bucket = [];
     let p = 1, got = 0;
-    while (got < 1200 && allCommits.length < MAX_BRICKS) {
+    while (got < 500 && (perRepo.reduce((a, b) => a + b.length, 0) + bucket.length) < MAX_BRICKS) {
       try {
         const cr = await fetch(
           api(`/repos/${username}/${repo.name}/commits?per_page=100&page=${p}`),
@@ -213,7 +257,7 @@ async function fetchAllData(username, onProgress, signal) {
         data.forEach(c => {
           const author = c.commit.author ? c.commit.author.name : 'unknown';
           contributorMap[author] = (contributorMap[author] || 0) + 1;
-          allCommits.push({
+          bucket.push({
             m: (c.commit.message || '').split('\n')[0].slice(0, 160),
             d: c.commit.author ? c.commit.author.date : '',
             lang: repo.language || 'Unknown',
@@ -228,16 +272,60 @@ async function fetchAllData(username, onProgress, signal) {
         break; // repo may be empty / forbidden; skip
       }
     }
+    // sort each repo's commits chronologically (oldest first) before interleaving
+    bucket.sort((a, b) => new Date(a.d) - new Date(b.d));
+    perRepo.push(bucket);
+    if (perRepo.reduce((a, b) => a + b.length, 0) >= MAX_BRICKS) break;
   }
 
-  // sort commits chronologically (oldest first → bottom of temple)
-  allCommits.sort((a, b) => new Date(a.d) - new Date(b.d));
+  // ---- INTERLEAVE commits round-robin across repos ----
+  // This is the fix for the "poorly colored pyramid": instead of pouring
+  // repo1's commits, then repo2's, ... (which clusters same-language bricks
+  // into solid color bands), we take one commit from each repo in turn. The
+  // result is that every layer of the temple contains a mix of repos/languages,
+  // so the structure reads as a rich, multi-colored monument rather than a
+  // monochrome pyramid. We still keep a rough chronological tendency because
+  // each bucket is internally sorted and we pull from the front.
+  const allCommits = [];
+  const totalCollected = perRepo.reduce((a, b) => a + b.length, 0);
+  const targetCount = Math.min(totalCollected, MAX_BRICKS);
+  const cursors = perRepo.map(() => 0);
+  let placed = 0;
+  while (placed < targetCount) {
+    let advanced = false;
+    for (let i = 0; i < perRepo.length; i++) {
+      if (cursors[i] < perRepo[i].length) {
+        allCommits.push(perRepo[i][cursors[i]]);
+        cursors[i]++;
+        placed++;
+        if (placed >= targetCount) break;
+        advanced = true;
+      }
+    }
+    if (!advanced) break; // all buckets exhausted
+  }
+
+  // ---- Build per-repo commit groups for multi-pyramid layout ----
+  // Each repo becomes its own visible mini-pyramid in the scene.
+  // We keep the flat allCommits array for backwards-compat (snapshot, stats)
+  // but also pass grouped data so buildBricks can lay out one pyramid per repo.
+  const repoGroups = [];
+  for (let i = 0; i < perRepo.length; i++) {
+    if (perRepo[i].length === 0) continue;
+    repoGroups.push({
+      name: topRepos[i] ? topRepos[i].name : `repo${i}`,
+      commits: perRepo[i]
+    });
+  }
+  // Sort repos by commit count desc so the biggest pyramid is at center-front
+  repoGroups.sort((a, b) => b.commits.length - a.commits.length);
 
   const blueprint = {
     user: { login: user.login, name: user.name || user.login, avatar: user.avatar_url },
     repoCount: repos.length,
     totalCommits: allCommits.length,
     commits: allCommits.slice(0, MAX_BRICKS),
+    repoGroups,
     totalStars, totalForks, totalIssues, totalPRs,
     languages: langBytes,
     contributors: Object.entries(contributorMap)
@@ -255,6 +343,7 @@ async function fetchAllData(username, onProgress, signal) {
 }
 
 function updateRateLimit(resp) {
+  if (!rateInfo) return;       // element removed in Phase 8 UI slim — no-op
   const rem = resp.headers.get('X-RateLimit-Remaining');
   const reset = resp.headers.get('X-RateLimit-Reset');
   if (rem != null) {
@@ -272,22 +361,38 @@ function updateRateLimit(resp) {
 // ==================================================================
 function demoBlueprint() {
   const langs = ['JavaScript','TypeScript','Python','Rust','HTML','CSS','Shell'];
+  // Demo repos with different sizes to showcase multi-pyramid layout.
+  // Biggest repo (monolith) will be at center, rest in a ring around it.
+  const demoRepos = [
+    { name: 'monolith', count: 180, lang: 'JavaScript' },
+    { name: 'oracle',   count: 90,  lang: 'Python' },
+    { name: 'sigil',    count: 55,  lang: 'TypeScript' },
+    { name: 'forge',    count: 40,  lang: 'Rust' },
+    { name: 'ashes',    count: 25,  lang: 'HTML' }
+  ];
   const commits = [];
   const now = Date.now();
-  for (let i = 0; i < 420; i++) {
-    commits.push({
-      m: ['feat: add temple forge','fix: brick alignment','docs: readme','refactor: aura ring','chore: deps','init: project scaffold','perf: instanced bricks','style: dark theme'][i % 8],
-      d: new Date(now - (420 - i) * 86400000 * 3).toISOString(),
-      lang: langs[i % langs.length],
-      repo: ['monolith','oracle','sigil','forge','ashes'][i % 5],
-      sha: (i * 9999).toString(16).padStart(7, '0')
-    });
-  }
+  const repoGroups = demoRepos.map((repo, ri) => {
+    const repoCommits = [];
+    for (let i = 0; i < repo.count; i++) {
+      const c = {
+        m: ['feat: add module','fix: edge case','docs: readme','refactor: cleanup','chore: deps','init: scaffold','perf: optimize','style: format'][i % 8],
+        d: new Date(now - (repo.count - i) * 86400000 * 3).toISOString(),
+        lang: langs[(ri + i) % langs.length],
+        repo: repo.name,
+        sha: (i * 9999 + ri * 7777).toString(16).padStart(7, '0')
+      };
+      repoCommits.push(c);
+      commits.push(c);
+    }
+    return { name: repo.name, commits: repoCommits };
+  });
   return {
     user: { login: 'demo', name: 'Demo Builder', avatar: '' },
-    repoCount: 5,
+    repoCount: demoRepos.length,
     totalCommits: commits.length,
     commits,
+    repoGroups,
     totalStars: 42, totalForks: 9, totalIssues: 3, totalPRs: 17,
     languages: { JavaScript:120, TypeScript:80, Python:60, Rust:40, HTML:30, CSS:20, Shell:10 },
     contributors: [
@@ -298,57 +403,59 @@ function demoBlueprint() {
 }
 
 // ==================================================================
-// SCENE SETUP
+// SCENE SETUP  (Phase 9: stripped for performance)
+//   • No shadows (biggest GPU win — removes 2048² shadow pass entirely)
+//   • Pixel ratio capped at 1 (retina 2× = 4× the fragment work)
+//   • Antialias OFF (use a light FXAA-free approach; edges fine at dpr 1)
+//   • One DirectionalLight + AmbientLight only (no dynamic PointLights)
+//   • No fog, no grid, no staircase, no lanterns — all removed as clutter
 // ==================================================================
 function initScene() {
   const container = $('canvas-container');
   scene = new THREE.Scene();
   scene.background = new THREE.Color(0x0d1117);
-  scene.fog = new THREE.Fog(0x0d1117, 30, 90);
 
   camera = new THREE.PerspectiveCamera(48, innerWidth / innerHeight, 0.1, 500);
-  camera.position.set(22, 16, 28);
+  camera.position.set(26, 18, 34);
 
-  renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
-  renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  // PERFORMANCE: cap pixel ratio at 1. On retina (dpr=2) this cuts fragment
+  // shader work by 4×. The visual difference is negligible at this geometry
+  // density and totally worth the smoothness.
+  renderer = new THREE.WebGLRenderer({ antialias: false, preserveDrawingBuffer: true });
+  renderer.setPixelRatio(1);
   renderer.setSize(innerWidth, innerHeight);
-  renderer.shadowMap.enabled = true;
-  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
   container.appendChild(renderer.domElement);
 
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
   controls.dampingFactor = 0.06;
-  controls.target.set(0, 4, 0);
+  controls.target.set(0, 2, 0);
   controls.maxDistance = 120;
-  controls.minDistance = 4;
+  controls.minDistance = 5;
   controls.maxPolarAngle = Math.PI * 0.495; // don't go under floor
 
-  // lights
-  scene.add(new THREE.AmbientLight(0x404060, 0.55));
-  const hemi = new THREE.HemisphereLight(0x9bb0ff, 0x1a1a2e, 0.5);
-  scene.add(hemi);
-  const sun = new THREE.DirectionalLight(0xfff4e0, 1.1);
-  sun.position.set(18, 30, 14);
-  sun.castShadow = true;
-  sun.shadow.mapSize.set(1024, 1024);
-  sun.shadow.camera.left = -30; sun.shadow.camera.right = 30;
-  sun.shadow.camera.top = 30; sun.shadow.camera.bottom = -30;
+  // lights — just two static lights, no shadow casting
+  scene.add(new THREE.AmbientLight(0x556070, 0.85));
+  const sun = new THREE.DirectionalLight(0xfff4e0, 1.25);
+  sun.position.set(20, 34, 16);
   scene.add(sun);
 
-  // ground
+  // ground — single disc, no shadow receiving
   const ground = new THREE.Mesh(
-    new THREE.CircleGeometry(60, 64),
-    new THREE.MeshStandardMaterial({ color: 0x141821, roughness: 0.9, metalness: 0.05 })
+    new THREE.CircleGeometry(70, 48),
+    new THREE.MeshStandardMaterial({ color: 0x141821, roughness: 0.92, metalness: 0.04 })
   );
   ground.rotation.x = -Math.PI / 2;
-  ground.receiveShadow = true;
   scene.add(ground);
 
-  // subtle grid
-  const grid = new THREE.GridHelper(80, 40, 0x30363d, 0x21262d);
-  grid.material.opacity = 0.25; grid.material.transparent = true;
-  scene.add(grid);
+  // sacred floor inlay: a lighter stone disc the temple sits on
+  const dais = new THREE.Mesh(
+    new THREE.CircleGeometry(16, 48),
+    new THREE.MeshStandardMaterial({ color: 0x1c2230, roughness: 0.8, metalness: 0.1 })
+  );
+  dais.rotation.x = -Math.PI / 2;
+  dais.position.y = 0.015;
+  scene.add(dais);
 
   // groups
   brickGroup = new THREE.Group(); scene.add(brickGroup);
@@ -361,11 +468,17 @@ function initScene() {
   pointer = new THREE.Vector2();
   clock = new THREE.Clock();
 
-  // events
+  // DEBUG export for verification (Phase 9)
+
+
+  // events — pointer state machine handles click vs hold-drag vs dblclick
   addEventListener('resize', onResize);
-  renderer.domElement.addEventListener('pointerdown', onPointerDown);
-  renderer.domElement.addEventListener('pointermove', onPointerMove);
-  renderer.domElement.addEventListener('click', onCanvasClick);
+  const cv = renderer.domElement;
+  cv.addEventListener('pointerdown', onPointerDown);
+  cv.addEventListener('pointermove', onPointerMove);
+  cv.addEventListener('pointerup', onPointerUp);
+  cv.addEventListener('pointercancel', onPointerUp);
+  cv.addEventListener('dblclick', onCanvasDblClick);
   controls.addEventListener('start', () => { lastInteraction = Date.now(); autoOrbitOn = false; });
 
   animate();
@@ -389,8 +502,6 @@ function clearTemple() {
       else c.material?.dispose?.();
     }
   });
-  if (auraMesh) { scene.remove(auraMesh); auraMesh.geometry.dispose(); auraMesh.material.dispose(); auraMesh = null; }
-  if (relicMesh) { scene.remove(relicMesh); relicMesh.geometry.dispose(); relicMesh.material.dispose(); relicMesh = null; }
 }
 
 function buildTemple(bp) {
@@ -402,13 +513,10 @@ function buildTemple(bp) {
   const hasCommits = bp.commits && bp.commits.length > 0;
 
   if (hasCommits) {
-    buildBricks(bp.commits);          // MVP 4: animated
+    buildBricks(bp.commits, bp.repoGroups);  // MVP 4: animated, multi-pyramid
     buildGoldenTiles(bp.totalStars);
     buildPillars(bp.totalForks);
     buildStainedGlass(bp.languages);
-    buildAura(bp);
-    maybeSpawnRelic(bp.commits.length);
-    spawnGhosts(bp.contributors);     // GEM: ghosts
     enableInitialOrbit();
   } else {
     buildRuins();                      // GEM: empty-state ruins
@@ -416,244 +524,287 @@ function buildTemple(bp) {
   }
 }
 
-// ---- BRICKS (animated queue) ----
-function buildBricks(commits) {
-  const total = commits.length;
-  const cols = Math.min(46, Math.max(8, Math.ceil(Math.sqrt(total * 1.8))));
-  const rows = Math.ceil(total / cols);
-  const bw = 0.82, bh = 0.42, bd = 0.82, gap = 0.06;
-  const wallX = cols * (bw + gap);
+// ---- BRICKS (animated queue) — ONE MINI-PYRAMID PER REPO ----
+// Instead of blending all repos into one giant temple, each repo gets its own
+// visible step-pyramid. Pyramids are arranged in a ring around the center,
+// sized proportional to commit count. The biggest repo is placed at center-
+// front. This lets you SEE the individual projects — how many, how big, and
+// what languages each one uses — at a glance.
+// Bricks within each pyramid are colored by the commit's language.
+function buildBricks(commits, repoGroups) {
+  const bw = 0.82, bh = 0.42, bd = 0.82, gap = 0.05;
+  const sx = bw + gap, sz = bd + gap; // stride per brick
 
-  // instanced for perf
+  // ---- Determine per-repo pyramid plans + ring positions ----
+  // If we don't have repoGroups (e.g. loaded from old snapshot), fall back to
+  // grouping commits by repo.name ourselves.
+  let groups = repoGroups;
+  if (!groups || groups.length === 0) {
+    const byRepo = {};
+    commits.forEach(c => {
+      const r = c.repo || 'unknown';
+      if (!byRepo[r]) byRepo[r] = { name: r, commits: [] };
+      byRepo[r].commits.push(c);
+    });
+    groups = Object.values(byRepo).sort((a, b) => b.commits.length - a.commits.length);
+  }
+
+  // ---- Build a flat slot list spanning ALL pyramids ----
+  // Each slot carries an absolute (x,z) position in world space + the commit
+  // it belongs to. One InstancedMesh covers everything.
+  const allSlots = [];   // {x, z, course, rotY, commit}
+  const pyramidMeta = []; // {name, cx, cz, baseSize, topY} for camera/labels
+
+  const ringSpacing = computeRingSpacing(groups.length);
+  const positions3D = computePyramidPositions(groups.length, ringSpacing);
+
+  for (let gi = 0; gi < groups.length; gi++) {
+    const grp = groups[gi];
+    const repoCommits = grp.commits;
+    if (repoCommits.length === 0) continue;
+
+    const pos = positions3D[gi];
+    // Size the pyramid base to balance width vs height. With inset=1, a base
+    // of B stacks ~B/2 courses. We want 3-6 courses for a good pyramid shape,
+    // so base ≈ sqrt(commits * 0.5) gives that balance.
+    const cc = repoCommits.length;
+    const baseCols = Math.min(13, Math.max(5, Math.round(Math.sqrt(cc * 0.5))));
+
+    const plan = planMiniPyramid(baseCols, cc, sx, sz);
+    const useCount = Math.min(plan.length, cc);
+
+    let topY = 0;
+    for (let i = 0; i < useCount; i++) {
+      const slot = plan[i];
+      const c = repoCommits[i];
+      const stagger = (slot.course % 2 === 1) ? sx / 2 : 0;
+      const x = pos.x + slot.x + stagger;
+      const z = pos.z + slot.z;
+      const y = bh / 2 + slot.course * (bh + gap);
+      if (y > topY) topY = y;
+      allSlots.push({ x, z, course: slot.course, rotY: slot.rotY || 0, commit: c, y });
+    }
+    pyramidMeta.push({ name: grp.name, cx: pos.x, cz: pos.z, baseSize: baseCols, topY });
+  }
+
+  const useCount = allSlots.length;
+  if (useCount === 0) return;
+
+  // ---- Build the instanced mesh ----
   const geo = new THREE.BoxGeometry(bw, bh, bd);
-  const mat = new THREE.MeshStandardMaterial({ roughness: 0.7, metalness: 0.08 });
-  const inst = new THREE.InstancedMesh(geo, mat, total);
-  inst.castShadow = true; inst.receiveShadow = true;
+  const mat = new THREE.MeshStandardMaterial({ roughness: 0.78, metalness: 0.06 });
+  const inst = new THREE.InstancedMesh(geo, mat, useCount);
   inst.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
   brickGroup.add(inst);
 
-  // per-instance color
-  const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(total * 3), 3);
+  const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(useCount * 3), 3);
   inst.instanceColor = colorAttr;
 
   const dummy = new THREE.Object3D();
   const color = new THREE.Color();
-  const positions = []; // store for raycasting + userData
+  const positions = []; // for raycasting + userData + animation
 
-  let idx = 0;
-  for (let row = 0; row < rows && idx < total; row++) {
-    for (let col = 0; col < cols && idx < total; col++) {
-      const c = commits[idx];
-      // build a hollow rectangular wall: front + back + 2 sides
-      const onFront = row < rows;
-      let x, z, rotY = 0;
-      const perimeter = cols * 2 + rows * 2;
-      const linear = col + row * cols; // not used; we stack walls
-      // simpler: front wall grows in +Z, back wall in -Z, side walls fill remainder
-      const frontCount = cols;
-      const backCount = cols;
-      const sideCount = (rows - 2) * 2; // interior rows on both sides
-      if (idx < frontCount) {
-        x = (col - cols / 2) * (bw + gap) + (bw + gap) / 2;
-        z = wallX / 2;
-      } else if (idx < frontCount + backCount) {
-        x = (col - cols / 2) * (bw + gap) + (bw + gap) / 2;
-        z = -wallX / 2;
-        rotY = Math.PI;
-      } else {
-        const s = idx - frontCount - backCount;
-        const sideRows = rows - 2;
-        if (s < sideRows) {
-          // left wall
-          x = -wallX / 2;
-          z = ((s % sideRows) - sideRows / 2) * (bd + gap) + (bd + gap) / 2;
-          rotY = Math.PI / 2;
-        } else {
-          x = wallX / 2;
-          z = (((s - sideRows) % sideRows) - sideRows / 2) * (bd + gap) + (bd + gap) / 2;
-          rotY = -Math.PI / 2;
-        }
-      }
-      const y = bh / 2 + row * (bh + gap);
-      positions.push({ x, z, y: -10, targetY: y, rotY, commit: c, index: idx });
-      color.set(langColor(c.lang));
-      colorAttr.setXYZ(idx, color.r, color.g, color.b);
-      // start hidden below ground
-      dummy.position.set(x, -10, z);
-      dummy.rotation.set(0, rotY, 0);
-      dummy.updateMatrix();
-      inst.setMatrixAt(idx, dummy.matrix);
-      idx++;
-    }
+  for (let i = 0; i < useCount; i++) {
+    const s = allSlots[i];
+    const c = s.commit;
+    positions.push({ x: s.x, z: s.z, y: -10, targetY: s.y, rotY: s.rotY, commit: c, index: i });
+    color.set(langColor(c.lang));
+    colorAttr.setXYZ(i, color.r, color.g, color.b);
+
+    dummy.position.set(s.x, -10, s.z);
+    dummy.rotation.set(0, s.rotY, 0);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
   }
-  inst.count = idx;
+  inst.count = useCount;
   inst.instanceMatrix.needsUpdate = true;
   colorAttr.needsUpdate = true;
   brickGroup._inst = inst;
   brickGroup._positions = positions;
+  brickGroup._pyramids = pyramidMeta;
 
-  // animate rise (MVP 4)
+  // ---- Animate the rise ----
   animateBrickRise(positions, inst);
 }
 
+// Compute spacing between pyramids based on how many there are.
+// Few repos → spread out; many repos → pack tighter.
+function computeRingSpacing(groupCount) {
+  if (groupCount <= 1) return 0;
+  if (groupCount <= 4) return 16;
+  if (groupCount <= 8) return 14;
+  return 12;
+}
+
+// Arrange N pyramids in world space. The biggest (index 0) goes at center.
+// The rest form a ring around it. Returns [{x, z}, ...] for each group index.
+function computePyramidPositions(n, spacing) {
+  const positions = [];
+  if (n <= 1) {
+    positions.push({ x: 0, z: 0 });
+    return positions;
+  }
+  // Index 0 (biggest repo) at center
+  positions.push({ x: 0, z: 0 });
+  // Remaining repos in a ring around center
+  const ringCount = n - 1;
+  for (let i = 0; i < ringCount; i++) {
+    const angle = (i / ringCount) * Math.PI * 2;
+    positions.push({ x: Math.cos(angle) * spacing, z: Math.sin(angle) * spacing });
+  }
+  return positions;
+}
+
+// Plan a single mini step-pyramid: keep stacking courses, each one smaller
+// than the last, until we've placed enough slots for all the repo's commits.
+// This creates a proper pyramid shape that gets taller for repos with more
+// commits. Returns flat list of {x, z, course, rotY}.
+function planMiniPyramid(baseCols, commitCount, sx, sz) {
+  const slots = [];
+  let course = 0;
+  let cols = baseCols;
+  let rows = baseCols; // square base
+  const tierInset = 1; // shrink each course by 1 brick per side → taller pyramids
+
+  // Keep stacking courses until we have enough slots or the pyramid tops out.
+  // Each course is a solid rectangle, smaller than the one below it.
+  while (cols >= 3 && rows >= 3) {
+    const ox = -(cols - 1) / 2 * sx;
+    const oz = -(rows - 1) / 2 * sz;
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        slots.push({ x: ox + c * sx, z: oz + r * sz, course, rotY: 0 });
+      }
+    }
+    // Stop if we have enough slots for this repo's commits
+    if (slots.length >= commitCount) break;
+    course++;
+    cols -= tierInset * 2;
+    rows -= tierInset * 2;
+  }
+
+  return slots;
+}
+
+// Animate the brick rise. To avoid O(n) per-frame work over ALL bricks for the
+// entire animation, we only update the "active window" of bricks each frame:
+// those that have started rising but haven't reached their target yet. Bricks
+// that have settled are skipped entirely. This keeps per-frame cost bounded.
 function animateBrickRise(positions, inst) {
   const dummy = new THREE.Object3D();
   const perFrame = Math.max(6, Math.ceil(positions.length / 90)); // ~1.5s build
   let cursor = 0;
-  const risen = new Array(positions.length).fill(false);
+  const active = []; // indices currently animating upward
 
   function step() {
+    // start a new batch rising
     const target = Math.min(cursor + perFrame, positions.length);
     for (; cursor < target; cursor++) {
-      risen[cursor] = true;
+      active.push(cursor);
     }
-    // animate risen ones toward targetY
-    let allDone = true;
-    for (let i = 0; i < positions.length; i++) {
-      const p = positions[i];
-      if (!risen[i]) { allDone = false; continue; }
+
+    // animate only active bricks toward targetY; drop settled ones
+    for (let i = active.length - 1; i >= 0; i--) {
+      const idx = active[i];
+      const p = positions[idx];
       p.y += (p.targetY - p.y) * 0.18;
-      if (Math.abs(p.y - p.targetY) > 0.01) allDone = false;
       dummy.position.set(p.x, p.y, p.z);
       dummy.rotation.set(0, p.rotY || 0, 0);
       dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
+      inst.setMatrixAt(idx, dummy.matrix);
+      if (Math.abs(p.y - p.targetY) <= 0.01) {
+        p.y = p.targetY;
+        active.splice(i, 1);
+      }
     }
     inst.instanceMatrix.needsUpdate = true;
-    if (!allDone || cursor < positions.length) {
+
+    if (active.length || cursor < positions.length) {
       requestAnimationFrame(step);
     }
   }
   step();
 }
 
-// z is stored directly on each position (see buildBricks push),
-// so the rise animation reads p.z without re-deriving.
-
-// ---- GOLDEN TILES (stars) ----
+// ---- GOLDEN TILES (stars) — INSTANCED for one draw call ----
+// Was: up to 250 separate Mesh+Material instances (250 draw calls).
+// Now: a single InstancedMesh with per-instance color (one draw call).
 function buildGoldenTiles(stars) {
   const n = Math.min(stars, 250);
+  if (n === 0) return;
   const geo = new THREE.CircleGeometry(0.34, 6);
+  const mat = new THREE.MeshStandardMaterial({
+    color: 0xffffff, // tinted per-instance below
+    emissive: 0xffaa00, emissiveIntensity: 0.45,
+    roughness: 0.3, metalness: 0.7,
+    side: THREE.DoubleSide
+  });
+  const inst = new THREE.InstancedMesh(geo, mat, n);
+  const dummy = new THREE.Object3D();
+  const gold = new THREE.Color(0xffd700);
+  const colorAttr = new THREE.InstancedBufferAttribute(new Float32Array(n * 3), 3);
   for (let i = 0; i < n; i++) {
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0xffd700, emissive: 0xffaa00, emissiveIntensity: 0.6,
-      roughness: 0.3, metalness: 0.7
-    });
-    const tile = new THREE.Mesh(geo, mat);
-    tile.rotation.x = -Math.PI / 2;
     const angle = i * 2.39996; // golden angle
-    const radius = 6 + Math.sqrt(i) * 1.4;
-    tile.position.set(Math.cos(angle) * radius, 0.02, Math.sin(angle) * radius);
-    tile.userData = { kind: 'star', index: i };
-    tileGroup.add(tile);
+    const radius = 17 + Math.sqrt(i) * 1.6;
+    dummy.position.set(Math.cos(angle) * radius, 0.03, Math.sin(angle) * radius);
+    dummy.rotation.set(-Math.PI / 2, 0, angle);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
+    colorAttr.setXYZ(i, gold.r, gold.g, gold.b);
   }
+  inst.instanceColor = colorAttr;
+  inst.userData = { kind: 'tiles' };
+  tileGroup.add(inst);
+  tileGroup._inst = inst;
 }
 
-// ---- PILLARS (forks) ----
+// ---- PILLARS (forks) — INSTANCED for one draw call ----
+// Was: up to 24 pillars × 2 meshes (pillar + capital) = 48 draw calls.
+// Now: a single InstancedMesh (one draw call). Capitals folded into the same
+// cylinder by just making the pillar slightly taller — visually equivalent at
+// this scale and far cheaper.
 function buildPillars(forks) {
   const n = Math.min(Math.max(forks, 0), 24);
   if (n === 0) return;
+  const geo = new THREE.CylinderGeometry(0.42, 0.52, 2.6, 10);
+  const mat = new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.35, metalness: 0.25 });
+  const inst = new THREE.InstancedMesh(geo, mat, n);
+  const dummy = new THREE.Object3D();
   for (let i = 0; i < n; i++) {
-    const angle = (i / n) * Math.PI * 2;
-    const radius = 9.5;
-    const height = 2.2 + (i % 6) * 0.7 + (forks > 20 ? 1 : 0);
-    const geo = new THREE.CylinderGeometry(0.42, 0.52, height, 12);
-    const mat = new THREE.MeshStandardMaterial({ color: 0xdedede, roughness: 0.35, metalness: 0.25 });
-    const pillar = new THREE.Mesh(geo, mat);
-    pillar.position.set(Math.cos(angle) * radius, height / 2, Math.sin(angle) * radius);
-    pillar.castShadow = true;
-    pillarGroup.add(pillar);
-    // capital
-    const cap = new THREE.Mesh(
-      new THREE.BoxGeometry(1.2, 0.3, 1.2),
-      mat
-    );
-    cap.position.set(Math.cos(angle) * radius, height + 0.15, Math.sin(angle) * radius);
-    pillarGroup.add(cap);
+    const angle = (i / n) * Math.PI * 2 + Math.PI / n; // offset so none block the stair
+    const radius = 15.5;
+    dummy.position.set(Math.cos(angle) * radius, 1.3, Math.sin(angle) * radius);
+    dummy.rotation.set(0, 0, 0);
+    dummy.updateMatrix();
+    inst.setMatrixAt(i, dummy.matrix);
   }
+  inst.userData = { kind: 'pillars' };
+  pillarGroup.add(inst);
+  pillarGroup._inst = inst;
 }
 
-// ---- STAINED GLASS (languages) ----
+// ---- STAINED GLASS (languages) — set into the back sanctum wall ----
+// Kept (it directly visualizes language diversity — the user wants MORE
+// language representation, not less). But the per-glass PointLight is removed
+// (was a dynamic light source each); the emissive material alone reads fine.
 function buildStainedGlass(langBytes) {
   const sorted = Object.entries(langBytes).sort((a, b) => b[1] - a[1]).slice(0, 6);
   const total = Object.values(langBytes).reduce((a, b) => a + b, 1) || 1;
   let x = -5;
-  const y = 5.5, z = 0;
+  const y = 6.5, z = -6.4;
   sorted.forEach(([lang, bytes]) => {
-    const w = Math.max(0.6, (bytes / total) * 9);
+    const w = Math.max(0.7, (bytes / total) * 9);
     const c = new THREE.Color(langColor(lang));
-    const geo = new THREE.PlaneGeometry(w, 4.2);
+    const geo = new THREE.PlaneGeometry(w, 4.4);
     const mat = new THREE.MeshStandardMaterial({
-      color: c, emissive: c, emissiveIntensity: 0.45,
-      transparent: true, opacity: 0.78, side: THREE.DoubleSide,
+      color: c, emissive: c, emissiveIntensity: 0.65,
+      transparent: true, opacity: 0.85, side: THREE.DoubleSide,
       roughness: 0.2
     });
     const glass = new THREE.Mesh(geo, mat);
-    // place along back wall interior
-    glass.position.set(x + w / 2, y, -8.4);
+    glass.position.set(x + w / 2, y, z);
     glassGroup.add(glass);
-    // glow light behind
-    const light = new THREE.PointLight(c, 0.8, 12);
-    light.position.set(x + w / 2, y, -8.7);
-    glassGroup.add(light);
     x += w + 0.4;
-  });
-}
-
-// ---- AURA RING (GEM #6) ----
-function buildAura(bp) {
-  const recent = bp.commits.slice(-70).length; // last ~70 commits as "week" proxy
-  const intensity = Math.min(1, recent / 70);
-  const geo = new THREE.TorusGeometry(8.2, 0.06 + intensity * 0.12, 16, 120);
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0x66ccff, emissive: 0x3399ff,
-    emissiveIntensity: 0.4 + intensity * 0.8,
-    transparent: true, opacity: 0.55 + intensity * 0.3
-  });
-  auraMesh = new THREE.Mesh(geo, mat);
-  auraMesh.rotation.x = -Math.PI / 2;
-  auraMesh.position.y = 0.1;
-  scene.add(auraMesh);
-}
-
-// ---- HIDDEN RELIC (GEM #9) ----
-function maybeSpawnRelic(brickCount) {
-  if (brickCount < RELIC_THRESHOLD) return;
-  if (Math.random() > 0.05) return; // 5% chance (was 1%, made friendlier)
-  const geo = new THREE.IcosahedronGeometry(0.5, 0);
-  const mat = new THREE.MeshStandardMaterial({
-    color: 0xffffff, emissive: 0xffffff, emissiveIntensity: 1.2,
-    roughness: 0.1, metalness: 0.9
-  });
-  relicMesh = new THREE.Mesh(geo, mat);
-  relicMesh.position.set(0, 6.5, 0);
-  relicMesh.userData = { relic: true };
-  scene.add(relicMesh);
-  // hum light
-  const l = new THREE.PointLight(0xffffff, 1.5, 8);
-  l.position.copy(relicMesh.position);
-  scene.add(l);
-  relicMesh._light = l;
-}
-
-// ---- GHOSTS (GEM #1) ----
-function spawnGhosts(contributors) {
-  if (!contributors || !contributors.length) return;
-  const top = contributors.slice(0, 8);
-  top.forEach((contrib, i) => {
-    const opacity = 0.18 + (1 - i / top.length) * 0.25;
-    const geo = new THREE.CapsuleGeometry(0.28, 1.1, 4, 8);
-    const mat = new THREE.MeshStandardMaterial({
-      color: 0x9bb0ff, transparent: true, opacity,
-      emissive: 0x4466aa, emissiveIntensity: 0.3, roughness: 0.6
-    });
-    const ghost = new THREE.Mesh(geo, mat);
-    const angle = (i / top.length) * Math.PI * 2;
-    const r = 6 + Math.random() * 2;
-    ghost.position.set(Math.cos(angle) * r, 0.9, Math.sin(angle) * r);
-    ghost.userData = { ghost: true, angle, r, speed: 0.1 + Math.random() * 0.15,
-                       name: contrib.name, count: contrib.count };
-    ghostGroup.add(ghost);
   });
 }
 
@@ -670,7 +821,6 @@ function buildRuins() {
     const r = 1 + Math.random() * 7;
     brick.position.set(Math.cos(angle) * r, Math.random() * 0.5, Math.sin(angle) * r);
     brick.rotation.set(Math.random() * 0.4, Math.random() * Math.PI, Math.random() * 0.4);
-    brick.castShadow = true;
     brickGroup.add(brick);
   }
   // a few broken pillars
@@ -736,38 +886,124 @@ function applyLangFilter() {
 }
 
 // ==================================================================
-// INTERACTION — click brick → modal  (MVP 6)
+// INTERACTION — pointer state machine (Phase 8)
+//   • single click on a brick  → commit modal (existing behaviour)
+//   • hold + move on a brick    → drag the brick across the ground plane
+//   • double-click on a brick   → GitHub repo file-tree preview panel
 // ==================================================================
-let hovered = null;
-function onPointerMove(e) {
-  pointer.x = (e.clientX / innerWidth) * 2 - 1;
-  pointer.y = -(e.clientY / innerHeight) * 2 + 1;
-  lastInteraction = Date.now();
-}
-function onPointerDown() { lastInteraction = Date.now(); }
+const CLICK_DELAY_MS = 220;     // wait this long before resolving a click
+let pendingClick = null;        // { id, timer }
 
-function onCanvasClick(e) {
-  if (!brickGroup._inst) return;
+function setPointer(e) {
   pointer.x = (e.clientX / innerWidth) * 2 - 1;
   pointer.y = -(e.clientY / innerHeight) * 2 + 1;
+}
+
+// Raycast the instanced bricks; returns { id, commit } or null.
+function pickBrick(e) {
+  if (!brickGroup || !brickGroup._inst) return null;
+  setPointer(e);
   raycaster.setFromCamera(pointer, camera);
   const hit = raycaster.intersectObject(brickGroup._inst);
-  if (hit.length) {
-    const id = hit[0].instanceId;
-    const commit = brickGroup._positions[id]?.commit;
-    if (commit) showCommitModal(commit);
-    return;
+  if (!hit.length) return null;
+  const id = hit[0].instanceId;
+  const commit = brickGroup._positions[id]?.commit;
+  if (!commit) return null;
+  return { id, commit, point: hit[0].point };
+}
+
+function onPointerDown(e) {
+  lastInteraction = Date.now();
+  if (e.button !== 0 && e.pointerType === 'mouse') return; // left only on mouse
+  const pick = pickBrick(e);
+  if (!pick) { drag = null; return; }
+  // record a potential drag session
+  drag = {
+    id: pick.id,
+    startX: e.clientX,
+    startY: e.clientY,
+    moved: false,
+    brickY: brickGroup._positions[pick.id].targetY, // keep this height
+    plane: new THREE.Plane(new THREE.Vector3(0, 1, 0), -brickGroup._positions[pick.id].targetY),
+    hit: new THREE.Vector3()
+  };
+}
+
+function onPointerMove(e) {
+  lastInteraction = Date.now();
+  if (!drag) return;
+  // decide whether we've crossed the drag threshold
+  if (!drag.moved) {
+    const dx = e.clientX - drag.startX;
+    const dy = e.clientY - drag.startY;
+    if (dx * dx + dy * dy < DRAG_THRESHOLD * DRAG_THRESHOLD) return;
+    drag.moved = true;
+    // entering drag mode: disable orbit so the camera doesn't fight us
+    controls.enabled = false;
+    // cancel any pending click — this is now a drag, not a click
+    if (pendingClick) { clearTimeout(pendingClick.timer); pendingClick = null; }
   }
-  // relic?
-  if (relicMesh) {
-    const rHit = raycaster.intersectObject(relicMesh);
-    if (rHit.length) {
-      showToast('✦ You found the Eternal Commit. You are the 1%.', 'ok', 8000);
-      return;
-    }
+  // drag the brick: raycast to the horizontal plane at the brick's height
+  setPointer(e);
+  raycaster.setFromCamera(pointer, camera);
+  if (raycaster.ray.intersectPlane(drag.plane, drag.hit)) {
+    moveBrick(drag.id, drag.hit.x, drag.hit.z, drag.brickY);
   }
 }
 
+function onPointerUp(e) {
+  lastInteraction = Date.now();
+  if (!drag) return;
+  const wasDrag = drag.moved;
+  const id = drag.id;
+  const commit = brickGroup._positions[id]?.commit;
+  drag = null;
+  controls.enabled = true;
+  if (wasDrag) return;            // it was a drag, not a click — don't open modal
+
+  // It's a click. Delay resolving it so a dblclick can cancel it.
+  if (pendingClick) { clearTimeout(pendingClick.timer); pendingClick = null; }
+  pendingClick = {
+    id,
+    timer: setTimeout(() => {
+      pendingClick = null;
+      if (commit) {
+        lastBrickRepo = commit.repo;
+        showCommitModal(commit);
+      }
+    }, CLICK_DELAY_MS)
+  };
+}
+
+function onCanvasDblClick(e) {
+  // cancel any pending single-click
+  if (pendingClick) { clearTimeout(pendingClick.timer); pendingClick = null; }
+  // discard an in-progress drag
+  if (drag) { drag = null; controls.enabled = true; }
+  const pick = pickBrick(e);
+  if (!pick) return;
+  lastBrickRepo = pick.commit.repo;
+  showRepoTree(pick.commit.repo);
+}
+
+// Move a single instanced brick to (x, z), keeping its y and rotation.
+function moveBrick(id, x, z, y) {
+  const inst = brickGroup._inst;
+  const pos = brickGroup._positions[id];
+  if (!inst || !pos) return;
+  pos.x = x;
+  pos.z = z;
+  pos.y = y;
+  pos.targetY = y;
+  const dummy = moveBrick._dummy || (moveBrick._dummy = new THREE.Object3D());
+  dummy.position.set(x, y, z);
+  dummy.rotation.set(0, pos.rotY || 0, 0);
+  dummy.updateMatrix();
+  inst.setMatrixAt(id, dummy.matrix);
+  inst.instanceMatrix.needsUpdate = true;
+}
+
+// ---- commit modal (unchanged behaviour) ----
 function showCommitModal(commit) {
   modalMsg.textContent = commit.m || '(no message)';
   modalRepo.textContent = 'repo: ' + commit.repo;
@@ -781,7 +1017,161 @@ function showCommitModal(commit) {
 modalClose.onclick = () => modalEl.classList.remove('show');
 
 // ==================================================================
-// AUTO-ORBIT  (GEM #2)
+// REPO FILE-TREE PREVIEW  (Phase 8)
+// Fetches the repo's git tree (recursive) via the GitHub REST API and
+// renders it as an ASCII directory tree — the classic `tree` output.
+// ==================================================================
+const TREE_CACHE_TTL = 1000 * 60 * 60 * 24; // 24h
+
+async function showRepoTree(repoName) {
+  if (!templeState) { showToast('Build a temple first.'); return; }
+  const owner = templeState.blueprint.user.login;
+  // demo mode has no real GitHub owner
+  if (owner === 'demo') {
+    treeRepoName.textContent = repoName + ' (demo)';
+    treeSub.textContent = 'Demo repos have no real file tree.';
+    treeBody.textContent = demoRepoTree(repoName);
+    treeLink.href = '#';
+    treePanel.classList.add('show');
+    return;
+  }
+
+  treePanel.classList.add('show');
+  treeRepoName.textContent = owner + '/' + repoName;
+  treeSub.textContent = 'Loading file tree…';
+  treeBody.textContent = '⏳ fetching…';
+  treeLink.href = `https://github.com/${owner}/${repoName}`;
+
+  // cache check
+  const cacheKey = 'fed-tree:' + owner + '/' + repoName;
+  try {
+    const raw = localStorage.getItem(cacheKey);
+    if (raw) {
+      const cached = JSON.parse(raw);
+      if (Date.now() - cached.ts < TREE_CACHE_TTL) {
+        renderRepoTree(owner, repoName, cached.tree);
+        return;
+      }
+    }
+  } catch (_) {}
+
+  try {
+    // 1. get the default branch
+    let r = await fetch(`https://api.github.com/repos/${owner}/${repoName}`);
+    updateRateLimit(r);
+    if (r.status === 404) throw new Error('Repo not found (it may be private).');
+    if (r.status === 403) throw new Error('GitHub rate limit hit — try again in ~1 hour.');
+    if (!r.ok) throw new Error('Could not fetch repo (' + r.status + ').');
+    const repoInfo = await r.json();
+    const branch = repoInfo.default_branch || 'main';
+
+    // 2. get the full recursive tree
+    r = await fetch(`https://api.github.com/repos/${owner}/${repoName}/git/trees/${branch}?recursive=1`);
+    updateRateLimit(r);
+    if (!r.ok) throw new Error('Could not fetch tree (' + r.status + ').');
+    const treeData = await r.json();
+
+    const truncated = !!treeData.truncated;
+    const entries = (treeData.tree || []).filter(e => e.type === 'blob' || e.type === 'tree');
+
+    const tree = { entries, branch, truncated };
+    try { localStorage.setItem(cacheKey, JSON.stringify({ ts: Date.now(), tree })); } catch (_) {}
+
+    renderRepoTree(owner, repoName, tree);
+  } catch (e) {
+    treeSub.textContent = 'Error';
+    treeBody.textContent = '✗ ' + (e.message || 'Failed to load tree.');
+  }
+}
+
+// Render the cached/fetched tree as ASCII into the panel (textContent = safe).
+function renderRepoTree(owner, repoName, tree) {
+  const entries = tree.entries || [];
+  if (!entries.length) {
+    treeSub.textContent = 'tree: ' + (tree.branch || '?') + ' — empty';
+    treeBody.textContent = '(no files)';
+    return;
+  }
+  // Build a nested node map from flat path list.
+  const root = { name: repoName, type: 'tree', children: {} };
+  let blobCount = 0, totalBytes = 0;
+  for (const e of entries) {
+    const parts = e.path.split('/');
+    let node = root;
+    for (let i = 0; i < parts.length; i++) {
+      const part = parts[i];
+      const isLast = i === parts.length - 1;
+      if (!node.children[part]) {
+        node.children[part] = { name: part, type: isLast ? e.type : 'tree', children: {}, size: isLast ? (e.size || 0) : 0 };
+      }
+      node = node.children[part];
+      if (isLast && e.type === 'blob') { blobCount++; totalBytes += (e.size || 0); }
+    }
+  }
+
+  const lines = [];
+  lines.push(root.name + '/');
+  walkTree(root, '', lines);
+  if (tree.truncated) {
+    lines.push('');
+    lines.push('⚠ tree truncated by GitHub (too many entries).');
+  }
+
+  treeSub.textContent = `${blobCount} files · ${formatBytes(totalBytes)} · branch: ${tree.branch}`;
+  treeBody.textContent = lines.join('\n');
+  treeLink.href = `https://github.com/${owner}/${repoName}`;
+}
+
+// Depth-first ASCII tree walk — classic `tree` style with ├── └── │.
+function walkTree(node, prefix, lines) {
+  const children = Object.values(node.children);
+  // directories first, then files, each alpha-sorted
+  children.sort((a, b) => {
+    if (a.type !== b.type) return a.type === 'tree' ? -1 : 1;
+    return a.name.localeCompare(b.name);
+  });
+  for (let i = 0; i < children.length; i++) {
+    const child = children[i];
+    const isLast = i === children.length - 1;
+    const branch = isLast ? '└── ' : '├── ';
+    if (child.type === 'tree') {
+      lines.push(prefix + branch + child.name + '/');
+      walkTree(child, prefix + (isLast ? '    ' : '│   '), lines);
+    } else {
+      lines.push(prefix + branch + child.name);
+    }
+  }
+}
+
+function formatBytes(n) {
+  if (n < 1024) return n + ' B';
+  if (n < 1048576) return (n / 1024).toFixed(1) + ' KB';
+  if (n < 1073741824) return (n / 1048576).toFixed(1) + ' MB';
+  return (n / 1073741824).toFixed(2) + ' GB';
+}
+
+// Fake but plausible tree for demo mode (no API calls).
+function demoRepoTree(repoName) {
+  return [
+    repoName + '/',
+    '├── src/',
+    '│   ├── index.js',
+    '│   ├── forge.js',
+    '│   └── utils.js',
+    '├── tests/',
+    '│   └── forge.test.js',
+    '├── README.md',
+    '├── package.json',
+    '└── LICENSE',
+    '',
+    '(demo — not a real GitHub repo)'
+  ].join('\n');
+}
+
+treeClose.onclick = () => treePanel.classList.remove('show');
+
+// ==================================================================
+// AUTO-ORBIT
 // ==================================================================
 function enableInitialOrbit() {
   autoOrbitOn = true;
@@ -789,43 +1179,23 @@ function enableInitialOrbit() {
 }
 
 // ==================================================================
-// RENDER LOOP
+// RENDER LOOP  (Phase 9: stripped — camera orbit + controls + render only)
+// Removed per-frame work: ghost loop, lantern flicker, aura spin, relic float.
 // ==================================================================
 function animate() {
   requestAnimationFrame(animate);
   const dt = clock.getDelta();
-  const t = clock.elapsedTime;
 
-  // idle auto-orbit
-  if (!autoOrbitOn && Date.now() - lastInteraction > IDLE_ORBIT_MS) autoOrbitOn = true;
-  if (autoOrbitOn) {
-    const radius = camera.position.length();
+  // idle auto-orbit (paused while dragging a brick)
+  if (!drag && !autoOrbitOn && Date.now() - lastInteraction > IDLE_ORBIT_MS) autoOrbitOn = true;
+  if (autoOrbitOn && !drag) {
+    const radius = 38;
     const a = Math.atan2(camera.position.x, camera.position.z) + dt * 0.12;
     camera.position.x = Math.sin(a) * radius;
     camera.position.z = Math.cos(a) * radius;
+    camera.position.y = 20;
     camera.lookAt(controls.target);
   }
-
-  // aura spin
-  if (auraMesh) auraMesh.rotation.z += dt * 0.15;
-
-  // relic float + spin
-  if (relicMesh) {
-    relicMesh.rotation.y += dt * 0.8;
-    relicMesh.position.y = 6.5 + Math.sin(t * 1.5) * 0.25;
-    if (relicMesh._light) relicMesh._light.position.copy(relicMesh.position);
-  }
-
-  // ghosts walk
-  ghostGroup.children.forEach(g => {
-    const ud = g.userData;
-    if (!ud.ghost) return;
-    ud.angle += dt * ud.speed;
-    g.position.x = Math.cos(ud.angle) * ud.r;
-    g.position.z = Math.sin(ud.angle) * ud.r;
-    g.position.y = 0.9 + Math.sin(t * 2 + ud.angle * 3) * 0.08;
-    g.rotation.y = -ud.angle + Math.PI / 2;
-  });
 
   controls.update();
   renderer.render(scene, camera);
@@ -872,6 +1242,7 @@ function downloadStandaloneHTML(bp) {
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>FED-TEMPLE — ${bp.user.login}</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/FED-OS/FED-TEMPLE@main/styles.css"/>
+<script src="https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"></script>
 </head><body>
 <div id="ui"><h1><span class="logo">🛕</span> FED-TEMPLE — ${bp.user.login}</h1>
 <div id="stats" class="active"><h2>// Snapshot</h2>
@@ -882,7 +1253,7 @@ function downloadStandaloneHTML(bp) {
 <div class="m-msg" id="modalMsg"></div><div class="m-meta" id="modalRepo"></div></div>
 <div id="canvas-container"></div>
 <script type="importmap">
-{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/","lz-string":"https://cdn.jsdelivr.net/npm/lz-string@1.5.0/libs/lz-string.min.js"}}
+{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"}}
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -907,15 +1278,15 @@ function snapshotPNG() {
   const prevDisplay = ui.style.display;
   ui.style.display = 'none';
   const tb = $('toolbar'); const tbPrev = tb.style.display; tb.style.display = 'none';
-  const kf = $('kofi'); const kfPrev = kf.style.display; kf.style.display = 'none';
-  const cr = $('credit'); const crPrev = cr.style.display; cr.style.display = 'none';
+  const tp = treePanel; const tpPrev = tp.style.display; tp.style.display = 'none';
+  const hd = hintEl; const hdPrev = hd.style.display; hd.style.display = 'none';
   renderer.render(scene, camera);
   const url = renderer.domElement.toDataURL('image/png');
   const a = document.createElement('a');
   a.href = url; a.download = `fed-temple-${templeState?.blueprint.user.login || 'snapshot'}.png`;
   a.click();
   ui.style.display = prevDisplay; tb.style.display = tbPrev;
-  kf.style.display = kfPrev; cr.style.display = crPrev;
+  tp.style.display = tpPrev; hd.style.display = hdPrev;
   showToast('Snapshot saved as PNG.', 'ok');
 }
 
@@ -943,6 +1314,7 @@ async function runBuild(demo = false) {
     buildTemple(bp);
     setTimeout(() => progressWrap.classList.remove('active'), 1200);
     showToast(`Temple raised: ${bp.totalCommits} bricks, ${bp.totalStars} stars.`, 'ok');
+    showHint();
   } catch (e) {
     if (e.name === 'AbortError') {
       showToast('Build cancelled.');
@@ -964,18 +1336,23 @@ demoBtn.onclick = () => runBuild(true);
 cancelBtn.onclick = () => { if (abortCtrl) abortCtrl.abort(); };
 toggleUi.onclick = () => {
   ui.classList.toggle('collapsed');
-  toggleUi.textContent = ui.classList.contains('collapsed') ? '👁 Show UI' : '👁 Hide UI';
+  toggleUi.textContent = ui.classList.contains('collapsed') ? '👁 Show' : '👁 Hide';
+};
+// stats panel collapse/expand via header click
+$('statsToggle').onclick = () => {
+  const collapsed = statsEl.classList.toggle('collapsed');
+  $('statsToggle').textContent = collapsed ? '// Blueprint ▸' : '// Blueprint ▾';
 };
 $('resetCam').onclick = () => {
-  camera.position.set(22, 16, 28);
-  controls.target.set(0, 4, 0);
+  camera.position.set(26, 18, 34);
+  controls.target.set(0, 2, 0);
   controls.update();
   autoOrbitOn = false; lastInteraction = Date.now();
 };
 $('autoRotate').onclick = (e) => {
   autoOrbitOn = !autoOrbitOn;
   lastInteraction = autoOrbitOn ? 0 : Date.now();
-  e.target.textContent = autoOrbitOn ? '⏸ Stop Orbit' : '🔄 Auto-Orbit';
+  e.target.textContent = autoOrbitOn ? '⏸ Stop' : '🔄 Orbit';
 };
 $('snapshot').onclick = snapshotPNG;
 $('downloadHtml').onclick = () => {
@@ -994,8 +1371,13 @@ $('shareLink').onclick = async () => {
     showToast('Link set in URL bar — copy it manually.', 'ok');
   }
 };
+// Tree button: re-open the tree for the last touched brick's repo
+toggleTreeBtn.onclick = () => {
+  if (!lastBrickRepo) { showToast('Click or double-click a brick first.'); return; }
+  showRepoTree(lastBrickRepo);
+};
 
-// keyboard shortcuts (Nice-to-Have #17)
+// keyboard shortcuts
 addEventListener('keydown', (e) => {
   if (e.target === usernameInput) return;
   if (e.key === 'r' || e.key === 'R') $('resetCam').click();
@@ -1026,6 +1408,7 @@ async function boot() {
   if (shared) {
     buildTemple(shared);
     showToast('Loaded shared temple from link.', 'ok');
+    showHint();
   } else {
     // auto-run demo so first-time visitors see magic instantly (MVP 9 default demo)
     runBuild(true);
@@ -1034,39 +1417,51 @@ async function boot() {
 
 boot();
 
-// placeholder used by downloadStandaloneHTML template (kept simple)
+// ==================================================================
+// STANDALONE SNAPSHOT TEMPLATE (used by downloadStandaloneHTML)
+// Phase 9: same perf wins — no shadows, dpr 1, no antialias, interleaved layout.
+// ==================================================================
 const SNAPTIME_INLINE = `
 const s=JSON.parse(LZString.decompressFromEncodedURIComponent(HASH));
 const bp={user:{login:s.u,name:s.n,avatar:''},repoCount:s.rc,totalCommits:s.tc,
 totalStars:s.ts,totalForks:s.tf,languages:s.L,
 commits:s.C.map(a=>({m:a[0],d:a[1],lang:a[2],repo:a[3],sha:a[4]})),contributors:s.G||[]};
-const LC={'JavaScript':'#f1e05a','TypeScript':'#3178c6','Python':'#3572A5','HTML':'#e34c26','CSS':'#563d7c','Shell':'#89e051','Rust':'#dea584','Unknown':'#888'};
-const lc=l=>LC[l]||'#888';
+const LC={'JavaScript':'#f1e05a','TypeScript':'#3178c6','Python':'#4B8BBE','HTML':'#e34c26','CSS':'#8B5CF6','Shell':'#89e051','Rust':'#dea584','Go':'#00ADD8','Java':'#b07219','C':'#8B8B8B','C++':'#f34b7d','C#':'#178600','Ruby':'#701516','PHP':'#7B8AB8','Vue':'#41b883','Unknown':'#888888'};
+const lc=l=>LC[l]||'#888888';
 const scene=new THREE.Scene();scene.background=new THREE.Color(0x0d1117);
 const cam=new THREE.PerspectiveCamera(48,innerWidth/innerHeight,0.1,500);
-cam.position.set(22,16,28);
-const ren=new THREE.WebGLRenderer({antialias:true});ren.setSize(innerWidth,innerHeight);
-ren.shadowMap.enabled=true;document.getElementById('canvas-container').appendChild(ren.domElement);
-const ctrl=new OrbitControls(cam,ren.domElement);ctrl.target.set(0,4,0);ctrl.enableDamping=true;
-scene.add(new THREE.AmbientLight(0x404060,0.6));
-const sun=new THREE.DirectionalLight(0xfff4e0,1.1);sun.position.set(18,30,14);scene.add(sun);
-const g=new THREE.Mesh(new THREE.CircleGeometry(60,64),new THREE.MeshStandardMaterial({color:0x141821}));
-g.rotation.x=-Math.PI/2;scene.add(g);
-const commits=bp.commits;const cols=Math.min(46,Math.max(8,Math.ceil(Math.sqrt(commits.length*1.8))));
-const rows=Math.ceil(commits.length/cols);const bw=0.82,bh=0.42,gap=0.06,wallX=cols*(bw+gap);
-const geo=new THREE.BoxGeometry(bw,bh,0.82);
-const mat=new THREE.MeshStandardMaterial({roughness:0.7});
-const inst=new THREE.InstancedMesh(geo,mat,commits.length);scene.add(inst);
-const ca=new THREE.InstancedBufferAttribute(new Float32Array(commits.length*3),3);inst.instanceColor=ca;
+cam.position.set(26,18,34);
+const ren=new THREE.WebGLRenderer({antialias:false});ren.setPixelRatio(1);ren.setSize(innerWidth,innerHeight);
+document.getElementById('canvas-container').appendChild(ren.domElement);
+const ctrl=new OrbitControls(cam,ren.domElement);ctrl.target.set(0,2,0);ctrl.enableDamping=true;ctrl.maxPolarAngle=Math.PI*0.495;ctrl.maxDistance=120;
+scene.add(new THREE.AmbientLight(0x556070,0.85));
+const sun=new THREE.DirectionalLight(0xfff4e0,1.25);sun.position.set(20,34,16);scene.add(sun);
+const g=new THREE.Mesh(new THREE.CircleGeometry(70,48),new THREE.MeshStandardMaterial({color:0x141821,roughness:0.92}));g.rotation.x=-Math.PI/2;scene.add(g);
+const commits=bp.commits;
+const bw=0.82,bh=0.42,gap=0.05,sx=bw+gap,sz=bw+gap;
+const byR={};commits.forEach(c=>{const r=c.repo||'unknown';if(!byR[r])byR[r]={name:r,commits:[]};byR[r].commits.push(c);});
+const groups=Object.values(byR).sort((a,b)=>b.commits.length-a.commits.length);
+const sp=groups.length<=1?0:groups.length<=4?16:groups.length<=8?14:12;
+const pp=[{x:0,z:0}];for(let i=0;i<groups.length-1;i++){const a=(i/(groups.length-1))*Math.PI*2;pp.push({x:Math.cos(a)*sp,z:Math.sin(a)*sp});}
+function mp(bc,tiers,cc){const sl=[];let course=0,cols=bc,rows=bc;const ins=2;
+for(let t=0;t<tiers;t++){const ox=-(cols-1)/2*sx,oz=-(rows-1)/2*sz;for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)sl.push({x:ox+c*sx,z:oz+r*sz,course});course++;cols=Math.max(3,cols-ins*2);rows=Math.max(3,rows-ins*2);}
+if(cols>=3&&rows>=3){const ox=-(cols-1)/2*sx,oz=-(rows-1)/2*sz;for(let r=0;r<rows;r++)for(let c=0;c<cols;c++)sl.push({x:ox+c*sx,z:oz+r*sz,course});course++;}
+return sl;}
+const allS=[];for(let gi=0;gi<groups.length;gi++){const grp=groups[gi];if(!grp.commits.length)continue;const pos=pp[gi];
+const bc=Math.min(14,Math.max(4,Math.round(Math.sqrt(grp.commits.length)*0.9)));const ti=grp.commits.length>400?3:grp.commits.length>80?2:1;
+const pl=mp(bc,ti,grp.commits.length);const uc=Math.min(pl.length,grp.commits.length);
+for(let i=0;i<uc;i++){const sl=pl[i];const c=grp.commits[i];const st=(sl.course%2===1)?sx/2:0;const x=pos.x+sl.x+st,z=pos.z+sl.z,y=bh/2+sl.course*(bh+gap);allS.push({x,z,y,rotY:sl.rotY||0,c});}}
+const useCount=allS.length;
+const geo=new THREE.BoxGeometry(bw,bh,bw);
+const mat=new THREE.MeshStandardMaterial({roughness:0.78,metalness:0.06});
+const inst=new THREE.InstancedMesh(geo,mat,useCount);scene.add(inst);
+const ca=new THREE.InstancedBufferAttribute(new Float32Array(useCount*3),3);inst.instanceColor=ca;
 const d=new THREE.Object3D();const col=new THREE.Color();
-commits.forEach((c,i)=>{const row=Math.floor(i/cols);const onFront=i<cols,onBack=i>=cols&&i<cols*2;
-let x,z;if(onFront){x=(i-cols/2)*(bw+gap)+(bw+gap)/2;z=wallX/2;}
-else if(onBack){x=((i-cols)-cols/2)*(bw+gap)+(bw+gap)/2;z=-wallX/2;}
-else{const sIdx=i-cols*2;const sr=rows-2;x=(sIdx<sr?-wallX/2:wallX/2);
-z=((sIdx%sr)-sr/2)*(0.88)+(0.44);}
-d.position.set(x,bh/2+row*(bh+gap),z);d.rotation.set(0,onFront?0:onBack?Math.PI:sIdx<sr?Math.PI/2:-Math.PI/2,0);
-d.updateMatrix();inst.setMatrixAt(i,d.matrix);col.set(lc(c.lang));ca.setXYZ(i,col.r,col.g,col.b);});
+for(let i=0;i<useCount;i++){const s2=allS[i];d.position.set(s2.x,s2.y,s2.z);d.rotation.set(0,s2.rotY,0);d.updateMatrix();inst.setMatrixAt(i,d.matrix);col.set(lc(s2.c.lang));ca.setXYZ(i,col.r,col.g,col.b);}
 inst.instanceMatrix.needsUpdate=true;ca.needsUpdate=true;
 addEventListener('resize',()=>{cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();ren.setSize(innerWidth,innerHeight);});
-function a(){requestAnimationFrame(a);ctrl.update();ren.render(scene,cam);}a();
+let autoOn=true,lastInt=Date.now();ren.domElement.addEventListener('pointerdown',()=>{autoOn=false;lastInt=Date.now();});
+function a(){requestAnimationFrame(a);if(!autoOn&&Date.now()-lastInt>8000)autoOn=true;
+if(autoOn){const r=38,ang=Math.atan2(cam.position.x,cam.position.z)+0.005;cam.position.x=Math.sin(ang)*r;cam.position.z=Math.cos(ang)*r;cam.position.y=20;cam.lookAt(ctrl.target);}
+ctrl.update();ren.render(scene,cam);}a();
 `;
