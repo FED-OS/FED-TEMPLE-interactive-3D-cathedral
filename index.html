@@ -46,6 +46,13 @@
       <button id="toggleUi" class="secondary">hide</button>
     </div>
 
+    <!-- Phase 10: build-mode switch. One grand temple forged from every repo,
+         or a ring of small temples - one per repo. Same data, instant switch. -->
+    <div class="btn-row mode-row">
+      <button id="modeOne" class="secondary active" title="Every repo merged into one grand temple (M)">1 temple</button>
+      <button id="modeMany" class="secondary" title="Separate into one small temple per repo (M)">all temples</button>
+    </div>
+
     <div id="progress-wrap">
       <div id="progress-text">Ready.</div>
       <div id="progress-bar"><div id="progress-fill"></div></div>
@@ -62,8 +69,8 @@
     </div>
   </div>
 
-  <!-- Hint badge: tells the user about drag + dblclick -->
-  <div id="hint">hold a brick to move · double-click for repo tree</div>
+  <!-- Hint badge: labels are the new headline feature (Phase 10) -->
+  <div id="hint">read the labels · click a label for its repo tree · hold a brick to move · M splits / merges temples</div>
 
   <!-- Commit modal -->
   <div id="modal">
