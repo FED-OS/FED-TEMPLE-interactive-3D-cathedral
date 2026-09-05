@@ -1,0 +1,38 @@
+# Path-based label rules for actions/labeler
+# A PR touching these paths gets the corresponding label automatically.
+
+'enhancement':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'scripts/**'
+          - 'index.html'
+
+'bug':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'scripts/**'
+
+'documentation':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '*.md'
+          - 'wiki/**'
+          - 'discussion/**'
+          - 'prompts/**'
+
+'ci':
+  - changed-files:
+      - any-glob-to-any-file:
+          - '.github/workflows/**'
+          - '.github/ISSUE_TEMPLATE/**'
+          - '.github/PULL_REQUEST_TEMPLATE.md'
+
+'styling':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'styles.css'
+
+'assets':
+  - changed-files:
+      - any-glob-to-any-file:
+          - 'social-image.png'
