@@ -22,6 +22,7 @@ FED-TEMPLE is part of the **[FED-OS](https://github.com/FED-OS)** ecosystem. It 
 | Languages | **Stained-glass windows** — sized by bytes of code written |
 | Contributors | **Ghosts** — translucent figures that wander the grounds |
 | Recent activity | **Aura ring** — a glowing torus whose brightness reflects the last burst of work |
+| Repos | **Labels** — every temple wears its repo name + commit count + language dot, readable without clicking |
 
 ## ✦ Features
 
@@ -44,7 +45,7 @@ FED-TEMPLE is part of the **[FED-OS](https://github.com/FED-OS)** ecosystem. It 
 - 🪐 Aura ring that pulses with recent activity
 - ✦ Hidden Eternal Commit relic (appears on temples with 5,000+ bricks)
 - 🖥 ASCII-art loader while WebGL warms up
-- ⌨️ Keyboard shortcuts: `R` reset camera · `S` snapshot · `H` toggle UI
+- ⌨️ Keyboard shortcuts: `R` reset camera · `S` snapshot · `H` toggle UI · `M` split/merge temples
 
 ## ✦ Quick start
 

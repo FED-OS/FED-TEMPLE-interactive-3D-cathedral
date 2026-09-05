@@ -102,6 +102,55 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
 }
 .btn-row button { flex: 1; font-size: 10px; padding: 6px 4px; }
 
+/* ---------- Mode switch (Phase 10): segmented control ---------- */
+.mode-row { margin-top: 1px; }
+.mode-row button {
+  flex: 1;
+  font-size: 10px;
+  padding: 6px 4px;
+  border-radius: 5px;
+  transition: background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+}
+button.secondary.active {
+  background: var(--accent);
+  color: #000;
+  border-color: var(--accent);
+}
+button.secondary.active:hover { background: #fff176; }
+
+/* ---------- Temple labels (Phase 10, CSS2DRenderer) ----------
+   Each label is a real DOM node projected onto a 3D anchor point.
+   The labels layer (labelRenderer.domElement) has pointer-events:none;
+   each .lbl re-enables them so orbit controls keep working through
+   empty space, while labels stay clickable (repo tree / mode split). */
+.lbl {
+  display: flex; align-items: center; gap: 6px;
+  background: var(--glass);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  font-family: var(--mono);
+  font-weight: 700;
+  font-size: 10px;
+  color: var(--text);
+  white-space: nowrap;
+  pointer-events: auto;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  user-select: none;
+}
+.lbl:hover { border-color: var(--accent); background: var(--bg-elev); }
+.lbl .l-dot { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; }
+.lbl .l-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; }
+.lbl .l-n { color: var(--text-dim); font-weight: 400; }
+.lbl.big {
+  font-size: 12px;
+  padding: 5px 10px;
+  letter-spacing: 0.5px;
+}
+.lbl.big:hover { background: var(--accent); color: #000; }
+.lbl.big:hover .l-n { color: #000; }
+
 /* ---------- Progress ---------- */
 #progress-wrap { margin: 6px 0; display: none; }
 #progress-wrap.active { display: block; }
@@ -293,6 +342,8 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   pointer-events: none;
   opacity: 0;
   transition: opacity 0.4s ease;
+  max-width: min(560px, calc(100vw - 480px));
+  text-align: center;
 }
 #hint.show { opacity: 1; }
 
@@ -315,5 +366,7 @@ button:disabled { opacity: 0.4; cursor: not-allowed; }
   #toolbar button { padding: 7px 9px; font-size: 13px; }
   #modal { right: 8px; bottom: 60px; width: calc(100vw - 16px); }
   #tree-panel { top: 8px; right: 8px; width: calc(100vw - 16px); max-height: 55vh; }
-  #hint { font-size: 9px; }
+  #hint { font-size: 9px; max-width: calc(100vw - 16px); top: auto; bottom: 56px; }
+  .lbl { font-size: 9px; padding: 2px 6px; }
+  .lbl .l-name { max-width: 90px; }
 }
